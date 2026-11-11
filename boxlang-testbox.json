@@ -1,0 +1,7 @@
+{
+	"mappings": {
+		"/": "${user-dir}",
+		"/testbox": "${env.TESTBOX_HOME}",
+		"/tests": "${user-dir}/tests"
+	}
+}

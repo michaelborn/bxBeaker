@@ -1,0 +1,108 @@
+class {
+	private function arbitrary( required function generator, boolean singleton = false ) {
+		return new Arbitrary( arguments.generator, arguments.singleton )
+	}
+
+	function constant( required any value ) {
+		return arbitrary( ( rng ) => value, true )
+	}
+
+	function integer( struct constraints = {} ) {
+	var min = structKeyExists( constraints, "min" ) ? constraints.min : -100
+	var max = structKeyExists( constraints, "max" ) ? constraints.max : 100
+	return arbitrary( ( rng ) => rng.between( min, max ) )
+	}
+
+	function string( struct constraints = {} ) {
+	var minLength = structKeyExists( constraints, "minLength" ) ? constraints.minLength : 0
+	var maxLength = structKeyExists( constraints, "maxLength" ) ? constraints.maxLength : 12
+	var alphabet = structKeyExists( constraints, "alphabet" ) ? constraints.alphabet : "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	return arbitrary( ( rng ) => {
+		var size = rng.between( minLength, maxLength )
+		var value = ""
+		for ( var i = 1; i <= size; i++ ) {
+			value &= mid( alphabet, rng.between( 1, len( alphabet ) ), 1 )
+		}
+		return value
+	} )
+	}
+
+	function email() {
+	var localPart = string( { minLength : 1, maxLength : 10, alphabet : "abcdefghijklmnopqrstuvwxyz0123456789" } )
+	return localPart.map( ( username ) => username & "@example.test" )
+	}
+
+	function arrayOf( required any itemArbitrary, struct constraints = {} ) {
+	var minLength = structKeyExists( constraints, "minLength" ) ? constraints.minLength : 0
+	var maxLength = structKeyExists( constraints, "maxLength" ) ? constraints.maxLength : 5
+	return arbitrary( ( rng ) => {
+		var size = rng.between( minLength, maxLength )
+		var values = []
+		for ( var i = 1; i <= size; i++ ) {
+			arrayAppend( values, itemArbitrary.generate( rng ) )
+		}
+		return values
+	} )
+	}
+
+	function structOf( required struct fields ) {
+	return arbitrary( ( rng ) => {
+		var value = {}
+		for ( var key in fields ) {
+			value[ key ] = fields[ key ].generate( rng )
+		}
+		return value
+	} )
+	}
+
+	private function makeRandom( required numeric seed ) {
+	var state = { value : abs( arguments.seed ) % 2147483647 }
+	if ( state.value == 0 ) {
+		state.value = 1
+	}
+	return {
+		between : ( required numeric min, required numeric max ) => {
+			state.value = ( state.value * 48271 ) % 2147483647
+			return arguments.min + ( state.value % ( arguments.max - arguments.min + 1 ) )
+		}
+	}
+	}
+
+	function beaker() {
+	var arbitraries = []
+	for ( var key in arguments ) {
+		arrayAppend( arbitraries, arguments[ key ] )
+	}
+
+	return {
+		check : ( required function property, struct options = {} ) => {
+			var runs = structKeyExists( options, "runs" ) ? options.runs : 20
+			var seed = structKeyExists( options, "seed" ) ? options.seed : 42
+			var allSingleton = true
+			for ( var item in arbitraries ) {
+				if ( !item.isSingleton() ) {
+					allSingleton = false
+				}
+			}
+			var effectiveRuns = allSingleton ? min( runs, 1 ) : runs
+			var rng = makeRandom( seed )
+			for ( var runIndex = 1; runIndex <= effectiveRuns; runIndex++ ) {
+				var values = []
+				for ( var item in arbitraries ) {
+					arrayAppend( values, item.generate( rng ) )
+				}
+				try {
+					property( argumentCollection = values )
+				} catch ( any e ) {
+					throw(
+						message = "Property failed on run #runIndex# (seed #seed#), counterexample #jsonSerialize( values )#: #e.message#",
+						type = "TestBox.AssertionFailed",
+						detail = e.detail ?: ""
+					)
+				}
+			}
+			return { runs : effectiveRuns, requestedRuns : runs, seed : seed }
+		}
+	}
+	}
+}

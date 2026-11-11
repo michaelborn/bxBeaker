@@ -1,0 +1,5 @@
+runner = new testbox.system.TestBox(
+	bundles = [ "tests.specs.BeakerPropertySpec" ],
+	reporter = "text"
+)
+println( runner.run() )

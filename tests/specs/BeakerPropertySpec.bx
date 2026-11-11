@@ -1,0 +1,116 @@
+class extends="testbox.system.BaseSpec" {
+	property name="beakerEngine";
+
+	function beforeAll() {
+		variables.beakerEngine = new Beaker()
+	}
+
+	// These small bundle helpers stand in for BIFs a BoxLang module could register.
+	private function beaker() {
+		return variables.beakerEngine.beaker( argumentCollection = arguments )
+	}
+
+	private function integer( struct constraints = {} ) {
+		return variables.beakerEngine.integer( arguments.constraints )
+	}
+
+	private function string( struct constraints = {} ) {
+		return variables.beakerEngine.string( arguments.constraints )
+	}
+
+	private function email() {
+		return variables.beakerEngine.email()
+	}
+
+	private function constant( required any value ) {
+		return variables.beakerEngine.constant( arguments.value )
+	}
+
+	private function arrayOf( required any itemArbitrary, struct constraints = {} ) {
+		return variables.beakerEngine.arrayOf( arguments.itemArbitrary, arguments.constraints )
+	}
+
+	private function structOf( required struct fields ) {
+		return variables.beakerEngine.structOf( arguments.fields )
+	}
+
+	function run() {
+		describe( "beaker property checks", () => {
+			it( "runs a multi-argument integer property inside one TestBox spec", () => {
+				var result = beaker( integer(), integer() ).check( ( x, y ) => {
+					expect( x ).toBeNumeric()
+					expect( y ).toBeNumeric()
+					expect( x + y ).toBe( y + x )
+				}, { runs : 50, seed : 2026 } )
+
+				expect( result.runs ).toBe( 50 )
+				expect( result.seed ).toBe( 2026 )
+			} )
+
+			it( "composes filter and realistic-shaped email arbitraries", () => {
+				beaker(
+					integer( { min : -20, max : 20 } ).filter( ( value ) => value % 2 == 0 ),
+					email()
+				).check( ( even, address ) => {
+					expect( even % 2 ).toBe( 0 )
+					expect( right( address, 13 ) ).toBe( "@example.test" )
+				}, { runs : 40, seed : 7 } )
+			} )
+
+			it( "generates arrays and nested structs, then serializes JSON", () => {
+				var scores = arrayOf( integer( { min : 0, max : 100 } ), { minLength : 1, maxLength : 5 } )
+				var user = structOf( {
+					name : string( { minLength : 1, maxLength : 8 } ),
+					email : email(),
+					scores : scores
+				} )
+				var json = user.map( ( value ) => jsonSerialize( value ) )
+
+				beaker( json ).check( ( generated ) => {
+					var decoded = jsonDeserialize( generated )
+					expect( isJSON( generated ) ).toBeTrue()
+					expect( decoded.email ).toInclude( "@example.test" )
+					expect( decoded.scores ).toBeArray()
+				}, { runs : 25, seed : 99 } )
+			} )
+
+			it( "generates parseable XML", () => {
+				var token = string( { minLength : 1, maxLength : 10, alphabet : "abcdefghijklmnopqrstuvwxyz0123456789" } )
+				var xml = token.map( ( value ) => "<root><value>#value#</value></root>" )
+
+				beaker( xml ).check( ( generated ) => {
+					var parsed = xmlParse( generated )
+					expect( parsed.xmlRoot.xmlName ).toBe( "root" )
+				}, { runs : 25, seed : 100 } )
+			} )
+
+			it( "replays a seed and executes a known singleton once", () => {
+				var first = []
+				var second = []
+				beaker( integer() ).check( ( value ) => arrayAppend( first, value ), { runs : 10, seed : 0 } )
+				beaker( integer() ).check( ( value ) => arrayAppend( second, value ), { runs : 10, seed : 0 } )
+				expect( jsonSerialize( first ) ).toBe( jsonSerialize( second ) )
+
+				var only = beaker( constant( "one" ) ).check( ( value ) => {
+					expect( value ).toBe( "one" )
+				}, { runs : 20 } )
+				expect( only.runs ).toBe( 1 )
+			} )
+
+			it( "reports a generated counterexample as a TestBox assertion failure", () => {
+				var captured = {}
+				try {
+					beaker( constant( 7 ) ).check( ( value ) => {
+						expect( value ).toBeLessThan( 0 )
+					}, { seed : 17 } )
+				} catch ( any e ) {
+					captured = e
+				}
+
+				expect( captured.type ).toBe( "TestBox.AssertionFailed" )
+				expect( captured.message ).toInclude( "seed 17" )
+				expect( captured.message ).toInclude( "counterexample [7]" )
+			} )
+		} )
+	}
+}
