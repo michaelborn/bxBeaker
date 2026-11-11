@@ -1,0 +1,38 @@
+class {
+	property name="generator" type="function";
+	property name="singleton" type="boolean";
+
+	function init( required function generator, boolean singleton = false ) {
+		variables.generator = arguments.generator
+		variables.singleton = arguments.singleton
+		return this
+	}
+
+	function generate( required any rng ) {
+		return variables.generator( arguments.rng )
+	}
+
+	function isSingleton() {
+		return variables.singleton
+	}
+
+	function map( required function mapper ) {
+		var source = this
+		var transform = arguments.mapper
+		return new Arbitrary( ( rng ) => transform( source.generate( rng ) ), variables.singleton )
+	}
+
+	function filter( required function predicate ) {
+		var source = this
+		var accepts = arguments.predicate
+		return new Arbitrary( ( rng ) => {
+			for ( var attempt = 1; attempt <= 100; attempt++ ) {
+				var value = source.generate( rng )
+				if ( accepts( value ) ) {
+					return value
+				}
+			}
+			throw( message = "filter() could not find an accepted value in 100 attempts", type = "BeakerPOC.FilterExhausted" )
+		}, false )
+	}
+}

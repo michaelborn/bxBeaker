@@ -1,0 +1,190 @@
+// Throwaway BoxLang POC for the proposed beaker(...).check(...) syntax.
+// This is intentionally self-contained; it is not a packaged TestBox module.
+
+function fail( required string message ) {
+	throw( message = message, type = "BeakerPOC.AssertionFailure" )
+}
+
+function assertTrue( required boolean condition, required string message ) {
+	if ( !arguments.condition ) {
+		fail( arguments.message )
+	}
+}
+
+function makeRandom( required numeric seed ) {
+	var state = { value : abs( arguments.seed ) % 2147483647 }
+	if ( state.value == 0 ) {
+		state.value = 1
+	}
+
+	return {
+		between : ( required numeric min, required numeric max ) => {
+			state.value = ( state.value * 48271 ) % 2147483647
+			return arguments.min + ( state.value % ( arguments.max - arguments.min + 1 ) )
+		}
+	}
+}
+
+function arbitrary( required function generator, boolean singleton = false ) {
+	return new Arbitrary( arguments.generator, arguments.singleton )
+}
+
+function constant( required any value ) {
+	return arbitrary( ( rng ) => value, true )
+}
+
+function integer( struct constraints = {} ) {
+	var min = structKeyExists( constraints, "min" ) ? constraints.min : -100
+	var max = structKeyExists( constraints, "max" ) ? constraints.max : 100
+	return arbitrary( ( rng ) => rng.between( min, max ) )
+}
+
+function string( struct constraints = {} ) {
+	var minLength = structKeyExists( constraints, "minLength" ) ? constraints.minLength : 0
+	var maxLength = structKeyExists( constraints, "maxLength" ) ? constraints.maxLength : 12
+	var alphabet = structKeyExists( constraints, "alphabet" ) ? constraints.alphabet : "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	return arbitrary( ( rng ) => {
+		var size = rng.between( minLength, maxLength )
+		var value = ""
+		for ( var i = 1; i <= size; i++ ) {
+			value &= mid( alphabet, rng.between( 1, len( alphabet ) ), 1 )
+		}
+		return value
+	} )
+}
+
+function email() {
+	var localPart = string( { minLength : 1, maxLength : 10, alphabet : "abcdefghijklmnopqrstuvwxyz0123456789" } )
+	return localPart.map( ( username ) => username & "@example.test" )
+}
+
+function arrayOf( required any itemArbitrary, struct constraints = {} ) {
+	var minLength = structKeyExists( constraints, "minLength" ) ? constraints.minLength : 0
+	var maxLength = structKeyExists( constraints, "maxLength" ) ? constraints.maxLength : 5
+	return arbitrary( ( rng ) => {
+		var size = rng.between( minLength, maxLength )
+		var values = []
+		for ( var i = 1; i <= size; i++ ) {
+			arrayAppend( values, itemArbitrary.generate( rng ) )
+		}
+		return values
+	} )
+}
+
+function structOf( required struct fields ) {
+	return arbitrary( ( rng ) => {
+		var value = {}
+		for ( var key in fields ) {
+			value[ key ] = fields[ key ].generate( rng )
+		}
+		return value
+	} )
+}
+
+function beaker() {
+	var arbitraries = []
+	for ( var key in arguments ) {
+		arrayAppend( arbitraries, arguments[ key ] )
+	}
+
+	return {
+		check : ( required function property, struct options = {} ) => {
+			var runs = structKeyExists( options, "runs" ) ? options.runs : 20
+			var seed = structKeyExists( options, "seed" ) ? options.seed : 42
+			var allSingleton = true
+			for ( var item in arbitraries ) {
+				if ( !item.isSingleton() ) {
+					allSingleton = false
+				}
+			}
+			var effectiveRuns = allSingleton ? min( runs, 1 ) : runs
+			var rng = makeRandom( seed )
+			for ( var runIndex = 1; runIndex <= effectiveRuns; runIndex++ ) {
+				var values = []
+				for ( var item in arbitraries ) {
+					arrayAppend( values, item.generate( rng ) )
+				}
+				try {
+					property( argumentCollection = values )
+				} catch ( any e ) {
+					throw(
+						message = "Property failed on run #runIndex# (seed #seed#), counterexample #jsonSerialize( values )#: #e.message#",
+						type = "BeakerPOC.PropertyFailure",
+						detail = e.detail ?: ""
+					)
+				}
+			}
+			return { runs : effectiveRuns, requestedRuns : runs, seed : seed }
+		}
+	}
+}
+
+// Integer inputs and multiple positional arguments.
+addResult = beaker( integer(), integer() ).check( ( x, y ) => {
+	assertTrue( isNumeric( x ) && isNumeric( y ), "integer() should generate numeric values" )
+	assertTrue( x == int( x ) && y == int( y ), "integer() should generate whole numbers" )
+	assertTrue( x + y == y + x, "integer addition should be commutative" )
+} )
+
+filteredResult = beaker( integer( { min : -20, max : 20 } ).filter( ( value ) => value % 2 == 0 ) ).check( ( value ) => {
+	assertTrue( value % 2 == 0, "filter() should only yield values accepted by its predicate" )
+} )
+
+// Strings and a realistic-shaped, deterministic test email.
+stringResult = beaker( string(), email() ).check( ( text, address ) => {
+	assertTrue( isSimpleValue( text ), "string() should produce a simple value" )
+	assertTrue( right( address, 13 ) == "@example.test", "email() should use the documented test domain" )
+} )
+
+// Arrays and structs composed from other arbitraries.
+arrays = arrayOf( integer(), { minLength : 1, maxLength : 5 } )
+users = structOf( {
+	name : string( { minLength : 1, maxLength : 8 } ),
+	email : email(),
+	scores : arrays
+} )
+structureResult = beaker( arrays, users ).check( ( numbers, user ) => {
+	assertTrue( isArray( numbers ) && numbers.len() >= 1, "arrayOf() should produce a non-empty array" )
+	assertTrue( isStruct( user ) && user.keyExists( "email" ), "structOf() should produce the requested fields" )
+} )
+
+// JSON text is built from structured values, so the resulting document is valid.
+jsonText = users.map( ( user ) => jsonSerialize( user ) )
+jsonResult = beaker( jsonText ).check( ( json ) => {
+	assertTrue( isJSON( json ), "generated JSON should parse" )
+	assertTrue( isStruct( jsonDeserialize( json ) ), "generated JSON should decode to a struct" )
+} )
+
+// XML text uses an XML-safe generated token and is parsed by the runtime.
+xmlToken = string( { minLength : 1, maxLength : 10, alphabet : "abcdefghijklmnopqrstuvwxyz0123456789" } )
+xmlText = xmlToken.map( ( token ) => "<root><value>#token#</value></root>" )
+xmlResult = beaker( xmlText ).check( ( xml ) => {
+	var parsed = xmlParse( xml )
+	assertTrue( parsed.xmlRoot.xmlName == "root", "generated XML should parse with the expected root" )
+} )
+
+// A fixed seed produces the same sequence; a known singleton runs only once.
+firstSamples = []
+secondSamples = []
+beaker( integer() ).check( ( value ) => arrayAppend( firstSamples, value ), { runs : 5, seed : 0 } )
+beaker( integer() ).check( ( value ) => arrayAppend( secondSamples, value ), { runs : 5, seed : 0 } )
+assertTrue( jsonSerialize( firstSamples ) == jsonSerialize( secondSamples ), "reusing a seed should reproduce the same values" )
+singletonResult = beaker( constant( "only" ) ).check( ( value ) => {
+	assertTrue( value == "only", "constant() should always yield its value" )
+}, { runs : 20 } )
+assertTrue( singletonResult.runs == 1, "a known singleton should run once" )
+
+failureMessage = ""
+try {
+	beaker( constant( 7 ) ).check( ( value ) => {
+		assertTrue( value < 0, "expected failure for reporting check" )
+	}, { seed : 17 } )
+} catch ( any e ) {
+	failureMessage = e.message
+}
+assertTrue( find( "run 1 (seed 17)", failureMessage ) > 0, "failure output should include the run and seed" )
+assertTrue( find( "counterexample [7]", failureMessage ) > 0, "failure output should include the counterexample" )
+
+println( "beaker POC passed: integers, strings, email, arrays, structs, JSON, and XML" )
+println( "property runs: #addResult.runs# / #filteredResult.runs# / #stringResult.runs# / #structureResult.runs# / #jsonResult.runs# / #xmlResult.runs#; seed: #addResult.seed#" )
+println( "same seed replays identically; singleton runs: #singletonResult.runs# of #singletonResult.requestedRuns# requested; failures include seed and counterexample" )
